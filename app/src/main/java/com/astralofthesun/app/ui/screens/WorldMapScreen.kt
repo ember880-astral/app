@@ -22,7 +22,21 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.OutlinedButton
+import com.astralofthesun.app.network.Repository
+import com.astralofthesun.app.network.isNotLive
+import com.astralofthesun.app.network.userMessage
+import com.astralofthesun.app.ui.components.NotLiveNote
+import com.astralofthesun.app.ui.components.Notice
+import com.astralofthesun.app.ui.components.BannerTone
+import com.astralofthesun.app.ui.components.fmtDuration
+import com.astralofthesun.app.ui.components.nextLocalMidnight
+import com.astralofthesun.app.ui.components.rememberNow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,20 +63,45 @@ import com.astralofthesun.app.ui.theme.TextFaint
    same number and must not be merged.
    ──────────────────────────────────────────────────────────────────── */
 @Composable
-fun WorldMapScreen(onSelectLocation: (LocationEntry) -> Unit) {
+fun WorldMapScreen(onSelectLocation: (LocationEntry) -> Unit, onSkills: () -> Unit = {}) {
     val limits by Astral.dungeonLimits
     val locations = Astral.locations
     val stats by Astral.stats
 
+    // Always re-read the map from the server on open (checkpoints / limits change after every run).
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<Throwable?>(null) }
+    LaunchedEffect(Unit) {
+        Repository.loadWorld().onFailure { error = it }.onSuccess { error = null }
+        loading = false
+    }
+
     Column(Modifier.fillMaxSize()) {
+
+        // ── Header: title + Skill Loadout shortcut ──
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("World Map", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = onSkills, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
+                Text("Skills", fontSize = 12.sp)
+            }
+        }
 
         // ── Top resource bar ──
         ResourceBar(limits)
 
         // ── Location list ──
         if (locations.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                EmptyNote("Map data loading…")
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                val e = error
+                when {
+                    loading -> EmptyNote("Loading the map…")
+                    e != null && e.isNotLive -> NotLiveNote("The world map")
+                    e != null -> Notice(e.userMessage(), BannerTone.Error)
+                    else -> EmptyNote("No locations yet.")
+                }
             }
             return@Column
         }
@@ -99,55 +138,63 @@ fun WorldMapScreen(onSelectLocation: (LocationEntry) -> Unit) {
     }
 }
 
-/* ── Resource bar at the top ── */
+/* ── Resource bar at the top ──
+   Runs and Stamina are two different pools and are always shown apart.
+   Both reset at local midnight; the countdown ticks live. */
 @Composable
 private fun ResourceBar(limits: DungeonLimits) {
-    val resetLabel = if (limits.resetTimeMinutes > 0) {
-        val h = limits.resetTimeMinutes / 60
-        val m = limits.resetTimeMinutes % 60
-        "Resets in ${if (h > 0) "${h}h " else ""}${m}m"
-    } else "Resets soon"
+    val now = rememberNow()
+    val resetAt = limits.resetAt ?: nextLocalMidnight(now)
+    val resetLabel = "Resets in " + fmtDuration(resetAt - now)
+    val runsLeft = (limits.runsMax - limits.runsUsed).coerceAtLeast(0)
+    val staminaLeft = (limits.staminaMax - limits.staminaUsed).coerceAtLeast(0)
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF050508))
-            .border(0.dp, Color.Transparent)
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Runs (left)
-        Column {
-            Text("Runs", color = TextDim, fontSize = 10.sp)
-            Text(
-                "${limits.runsMax - limits.runsUsed}/${limits.runsMax}",
-                color = if (limits.runsUsed >= limits.runsMax) Color(0xFFE76E6E) else Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PoolCard(
+                label = "Runs",
+                value = "$runsLeft/${limits.runsMax}",
+                hint = "1 per dungeon entry" + if (limits.isPremium) " · Premium" else " · 20 with Premium",
+                color = if (runsLeft == 0) Color(0xFFE76E6E) else Color.White,
+                modifier = Modifier.weight(1f),
             )
-        }
-        // Stamina (center)
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Stamina", color = TextDim, fontSize = 10.sp)
-            Text(
-                "${limits.staminaMax - limits.staminaUsed}/${limits.staminaMax}",
+            PoolCard(
+                label = "Stamina",
+                value = "$staminaLeft/${limits.staminaMax}",
+                hint = "1 per fight",
                 color = when {
-                    limits.staminaUsed >= limits.staminaMax -> Color(0xFFE76E6E)
-                    limits.staminaUsed > limits.staminaMax * 0.7 -> Color(0xFFE7A56E)
+                    staminaLeft == 0 -> Color(0xFFE76E6E)
+                    staminaLeft < limits.staminaMax * 0.3 -> Color(0xFFE7A56E)
                     else -> Color.White
                 },
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
+                modifier = Modifier.weight(1f),
             )
         }
-        // Reset time (right)
-        Column(horizontalAlignment = Alignment.End) {
-            Text(resetLabel, color = TextFaint, fontSize = 10.sp)
-            if (limits.isPremium) {
-                Text("Premium", color = Gold, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
-            }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Both reset at local midnight", color = TextFaint, fontSize = 10.sp)
+            Text(resetLabel, color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
         }
+    }
+}
+
+@Composable
+private fun PoolCard(label: String, value: String, hint: String, color: Color, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF0B0B10))
+            .border(0.5.dp, CardBorder, RoundedCornerShape(12.dp))
+            .padding(10.dp),
+    ) {
+        Text(label, color = TextDim, fontSize = 10.sp)
+        Text(value, color = color, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        Text(hint, color = TextFaint, fontSize = 9.sp)
     }
 }
 
@@ -182,14 +229,14 @@ private fun NewcomerCallout(loc: LocationEntry, limits: DungeonLimits, onClick: 
             LocationArt(loc)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(loc.name.ifEmpty { "Newcomer's Hollow" }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text("Beginner dungeon · ${loc.levelRange.ifEmpty { "Lv. 1–10" }}", color = TextDim, fontSize = 11.sp)
+                Text("Easy lane for new players · Lv. ${loc.levelRange.ifEmpty { "1–10" }}", color = TextDim, fontSize = 11.sp)
                 Text(
-                    "Daily runs: $newcomerRuns/${limits.newcomerRunsMax} left",
+                    "Own daily floor allowance: $newcomerRuns/${limits.newcomerRunsMax} left",
                     color = if (newcomerRuns == 0) Color(0xFFE76E6E) else TextFaint,
                     fontSize = 10.sp,
                 )
             }
-            EnterButton(loc, true, onClick)
+            EnterButton(loc, newcomerRuns > 0, onClick)
         }
     }
 }
@@ -240,6 +287,7 @@ private fun LocationCard(loc: LocationEntry, limits: DungeonLimits, onSelect: (L
             // Lock reason
             if (!loc.unlocked) {
                 val reason = when {
+                    loc.prerequisiteName != null -> "Clear ${loc.prerequisiteName} first"
                     loc.prerequisiteId != null -> "Clear the prerequisite dungeon first"
                     loc.prerequisiteLevel != null -> "Reach Lv. ${loc.prerequisiteLevel} to unlock"
                     else -> "Locked"
@@ -256,7 +304,8 @@ private fun LocationCard(loc: LocationEntry, limits: DungeonLimits, onSelect: (L
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
             ) { Text("Enter", fontSize = 12.sp, color = Color(0xFF6EE787)) }
         } else {
-            EnterButton(loc, runsLeft > 0, onSelect)
+            val canEnter = if (loc.isNewcomer) limits.newcomerRunsMax - limits.newcomerRunsUsed > 0 else runsLeft > 0
+            EnterButton(loc, canEnter, onSelect)
         }
     }
 }

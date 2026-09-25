@@ -17,6 +17,7 @@ data class Stats(val level: Int? = null, val solars: Long? = null, val gems: Lon
 data class Wallet(val solars: Long? = null, val gems: Long? = null)
 
 data class ShopItem(
+    val id: String = "",
     val name: String = "",
     val desc: String = "",
     val price: Long? = null,
@@ -69,10 +70,12 @@ data class LocationEntry(
     val levelRange: String = "",               // e.g. "1–10"
     val unlocked: Boolean = false,
     val prerequisiteId: String? = null,        // locked until this dungeon cleared
+    val prerequisiteName: String? = null,
     val prerequisiteLevel: Int? = null,        // locked until player reaches this level
     val currentFloor: Int? = null,             // floor the player last saved a checkpoint at
     val totalFloors: Int? = null,
     val bossFloors: List<Int> = emptyList(),
+    val checkpointInterval: Int? = null,       // a checkpoint is saved every N floors
     val description: String = "",
 )
 
@@ -84,7 +87,8 @@ data class DungeonLimits(
     val newcomerRunsMax: Int = 3,  // Newcomer's Hollow has its own allowance
     val staminaUsed: Int = 0,
     val staminaMax: Int = 30,
-    val resetTimeMinutes: Int = 0, // minutes until daily reset
+    val resetTimeMinutes: Int = 0, // minutes until daily reset (legacy)
+    val resetAt: Long? = null,     // epoch ms of next reset from the server; null → local midnight
     val isPremium: Boolean = false,
 )
 
@@ -146,20 +150,23 @@ data class SkillLoadout(
 
 /* ── Floor result (win / death) ── */
 
-data class LootItem(val name: String = "", val image: String = "")
+data class LootItem(val name: String = "", val image: String = "", val qty: Int = 1)
 
 /** What the backend sends back after a floor concludes. */
 data class FloorResult(
     val victory: Boolean = false,
     val xpGained: Int? = null,
+    val solarsGained: Long? = null,
     val leveledUp: Boolean = false,
     val newLevel: Int? = null,
     val newSkillUnlocked: Skill? = null,
     val loot: List<LootItem> = emptyList(),
     val floor: Int? = null,
     val isLastFloor: Boolean = false,          // dungeon fully cleared
+    val checkpointSaved: Int? = null,          // floor saved as checkpoint on this win, if any
     // ── death fields ──
-    val gearLost: List<LootItem> = emptyList(),
+    val gearLost: List<LootItem> = emptyList(),   // equipped gear lost
+    val bagLost: List<LootItem> = emptyList(),    // bag contents lost (everything not in the Chest)
     val savedByPremiumRevive: Boolean = false,
     val savedByItem: String? = null,           // name of the protective item (e.g. "Totem of Binding")
     val nextFloor: Int? = null,

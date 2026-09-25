@@ -22,6 +22,17 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import com.astralofthesun.app.network.Repository
+import com.astralofthesun.app.network.userMessage
+import com.astralofthesun.app.ui.components.BannerTone
+import com.astralofthesun.app.ui.components.Notice
+import com.astralofthesun.app.ui.components.fmt
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,16 +71,43 @@ fun FloorResultScreen(
     onLeaveDungeon: () -> Unit,
     onReturnToTown: () -> Unit,
 ) {
-    if (result.victory) {
-        VictoryScreen(result, onNextFloor, onLeaveDungeon)
-    } else {
-        DeathScreen(result, onReturnToTown)
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    // Each button is a server call; we only navigate once the server has answered.
+    fun run(call: suspend () -> Result<Unit>, then: () -> Unit) {
+        if (busy) return
+        busy = true
+        error = null
+        scope.launch {
+            call().onSuccess { then() }.onFailure { error = it.userMessage() }
+            busy = false
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        error?.let { Notice(it, BannerTone.Error, modifier = Modifier.padding(12.dp)) { error = null } }
+        Box(Modifier.weight(1f)) {
+            if (result.victory) {
+                VictoryScreen(
+                    result,
+                    busy = busy,
+                    onNextFloor = { run({ Repository.nextFloor() }, onNextFloor) },
+                    onLeave = { run({ Repository.leaveDungeon() }, onLeaveDungeon) },
+                )
+            } else {
+                DeathScreen(result, busy = busy, onReturnToTown = {
+                    run({ Repository.afterDeath(); Result.success(Unit) }, onReturnToTown)
+                })
+            }
+        }
     }
 }
 
 /* ── Victory ── */
 @Composable
-private fun VictoryScreen(result: FloorResult, onNextFloor: () -> Unit, onLeave: () -> Unit) {
+private fun VictoryScreen(result: FloorResult, busy: Boolean, onNextFloor: () -> Unit, onLeave: () -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(Color(0xFF000000)),
         contentPadding = PaddingValues(16.dp),
@@ -113,6 +151,19 @@ private fun VictoryScreen(result: FloorResult, onNextFloor: () -> Unit, onLeave:
                         Text("XP gained", color = TextDim, fontSize = 13.sp)
                         Text("+$xp XP", color = Color(0xFF6EE787), fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     }
+                }
+                result.solarsGained?.takeIf { it > 0 }?.let { sol ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Solars", color = TextDim, fontSize = 13.sp)
+                        Text("+${fmt(sol)}", color = Gold, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    }
+                }
+                result.checkpointSaved?.let { cp ->
+                    Text("📍 Checkpoint saved at Floor $cp", color = Gold, fontSize = 12.sp)
                 }
 
                 if (result.leveledUp && result.newLevel != null) {
@@ -163,7 +214,8 @@ private fun VictoryScreen(result: FloorResult, onNextFloor: () -> Unit, onLeave:
         // Leave hint
         item {
             Text(
-                "Leaving saves your checkpoint for free — the run is already spent.",
+                if (result.isLastFloor) "Dungeon complete — your progress is saved."
+                else "Next Floor costs 1 Stamina. Leaving saves your checkpoint and ends this run.",
                 color = TextFaint,
                 fontSize = 11.sp,
                 textAlign = TextAlign.Center,
@@ -177,6 +229,7 @@ private fun VictoryScreen(result: FloorResult, onNextFloor: () -> Unit, onLeave:
                 if (!result.isLastFloor) {
                     Button(
                         onClick = onNextFloor,
+                        enabled = !busy,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Primary),
                     ) {
@@ -185,6 +238,7 @@ private fun VictoryScreen(result: FloorResult, onNextFloor: () -> Unit, onLeave:
                 }
                 OutlinedButton(
                     onClick = onLeave,
+                    enabled = !busy,
                     modifier = Modifier.fillMaxWidth().height(46.dp),
                 ) {
                     Text(
@@ -199,9 +253,8 @@ private fun VictoryScreen(result: FloorResult, onNextFloor: () -> Unit, onLeave:
 
 /* ── Death ── */
 @Composable
-private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
+private fun DeathScreen(result: FloorResult, busy: Boolean, onReturnToTown: () -> Unit) {
     val gearSaved = result.savedByPremiumRevive || result.savedByItem != null
-    val partialLoss = gearSaved && result.gearLost.isEmpty()
 
     Column(
         modifier = Modifier
@@ -254,7 +307,7 @@ private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
                                 result.savedByItem != null ->
                                     Text("${result.savedByItem} protected you", color = Color(0xFF6EE787), fontWeight = FontWeight.Bold, fontSize = 14.sp)
                             }
-                            Text("Your equipped gear was not lost.", color = TextDim, fontSize = 12.sp)
+                            Text("You were saved — nothing was lost this time.", color = TextDim, fontSize = 12.sp)
                         }
                     }
                 }
@@ -272,9 +325,9 @@ private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
                             .padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text("Gear lost", color = Color(0xFFE76E6E), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("Equipped gear lost", color = Color(0xFFE76E6E), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         Text(
-                            "This gear has been removed from your inventory.",
+                            "This gear is gone.",
                             color = TextFaint,
                             fontSize = 11.sp,
                         )
@@ -285,19 +338,29 @@ private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
                 }
             }
 
-            // No gear saved, no gear lost — full loss
-            if (!gearSaved && result.gearLost.isEmpty()) {
+            // Bag wipe — death takes everything in the bag that wasn't moved to the Chest
+            if (!gearSaved) {
                 item {
                     Column(
-                        modifier = cardModifier().padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF140000))
+                            .border(0.5.dp, Color(0xFFE76E6E).copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text("Equipped gear lost", color = Color(0xFFE76E6E), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("Your bag was wiped", color = Color(0xFFE76E6E), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(
-                            "Your equipped items were lost on death. Gear in your bag is safe.",
+                            "Death takes everything in your bag. Only items you had moved to the Chest survived.",
                             color = TextDim,
                             fontSize = 12.sp,
                         )
+                        if (result.bagLost.isNotEmpty()) {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(result.bagLost) { LostGearChip(it) }
+                            }
+                        }
                     }
                 }
             }
@@ -309,8 +372,9 @@ private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text("Protect yourself next time", color = TextDim, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    Text("• Premium members get one free revive per day that saves gear.", color = TextFaint, fontSize = 11.sp)
-                    Text("• Hold a Totem or other protective item to prevent gear loss on death.", color = TextFaint, fontSize = 11.sp)
+                    Text("• Move anything you can't afford to lose into the Chest before a run.", color = TextFaint, fontSize = 11.sp)
+                    Text("• Premium includes one auto-revive per day.", color = TextFaint, fontSize = 11.sp)
+                    Text("• A protective item (e.g. Totem of Undying) can save you.", color = TextFaint, fontSize = 11.sp)
                 }
             }
         }
@@ -324,7 +388,7 @@ private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "Your run ends here. There is no retry.",
+                "This run is over.",
                 color = TextFaint,
                 fontSize = 11.sp,
                 textAlign = TextAlign.Center,
@@ -332,6 +396,7 @@ private fun DeathScreen(result: FloorResult, onReturnToTown: () -> Unit) {
             )
             Button(
                 onClick = onReturnToTown,
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A0A0A)),
             ) {

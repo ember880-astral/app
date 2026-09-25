@@ -28,7 +28,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.draw.alpha
+import com.astralofthesun.app.ui.components.AstralImage
+import com.astralofthesun.app.ui.components.BannerTone
+import com.astralofthesun.app.ui.components.Notice
+import com.astralofthesun.app.ui.components.rememberNow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,7 +72,7 @@ import com.astralofthesun.app.ui.theme.TextFaint
    Astral.floorResult and routes to FloorResultScreen.
    ──────────────────────────────────────────────────────────────────── */
 @Composable
-fun DungeonBattleScreen(onFloorEnd: () -> Unit) {
+fun DungeonBattleScreen(onFloorEnd: () -> Unit, onFled: () -> Unit = {}) {
     val player by Astral.battle.player
     val enemies = Astral.battle.enemies
     val skills = Astral.battle.skills
@@ -77,7 +83,17 @@ fun DungeonBattleScreen(onFloorEnd: () -> Unit) {
     val selectedTarget by Astral.battle.selectedTargetId
     val bossPhase by Astral.battle.bossPhase
     val telegraph by Astral.battle.bossTelegraph
-    val timerSec by Astral.battle.bossTimerRemaining
+    val deadline by Astral.battle.turnDeadlineAt
+    val floorResult by Astral.floorResult
+    val lastError by Astral.battle.lastError
+    val art by Astral.battle.backgroundArt
+    val floor by Astral.battle.floor
+    val totalFloors by Astral.battle.totalFloors
+    val locationName by Astral.battle.locationName
+    val fleeChance by Astral.battle.fleeChance
+    // Boss floors: visible 5-minute turn timer, counted down from the server's deadline.
+    val now = rememberNow()
+    val timerSec: Int? = deadline?.let { ((it - now) / 1000).coerceAtLeast(0).toInt() }
     val skillMenuOpen by Astral.battle.skillMenuOpen
     val itemMenuOpen by Astral.battle.itemMenuOpen
     val isDefending by Astral.battle.isDefending
@@ -85,19 +101,36 @@ fun DungeonBattleScreen(onFloorEnd: () -> Unit) {
 
     val inBattle = outcome == BattleOutcome.InProgress
 
-    // When the floor ends, bubble up
-    if (!inBattle) {
-        onFloorEnd()
-        return
+    // The server ended the floor → show its result (win/death). Fled with no result → back to the map.
+    LaunchedEffect(outcome, floorResult) {
+        when {
+            floorResult != null -> onFloorEnd()
+            outcome == BattleOutcome.Fled -> onFled()
+        }
     }
 
+    Box(Modifier.fillMaxSize().background(Color(0xFF000000))) {
+    // Location background art, dimmed so the UI stays readable.
+    if (art.isNotBlank()) {
+        AstralImage(url = art, corner = 0, modifier = Modifier.fillMaxSize().alpha(0.35f))
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF000000))
+            .background(Color(0x99000000))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        // ── Where you are ──
+        if (locationName.isNotEmpty() || floor != null) {
+            Text(
+                listOfNotNull(
+                    locationName.ifEmpty { null },
+                    floor?.let { f -> "Floor $f" + (totalFloors?.let { " / $it" } ?: "") },
+                ).joinToString(" · "),
+                color = TextFaint, fontSize = 11.sp,
+            )
+        }
 
         // ── Floor kind label ──
         Row(
@@ -122,20 +155,20 @@ fun DungeonBattleScreen(onFloorEnd: () -> Unit) {
         }
 
         // ── Boss telegraph panel ──
-        if (floorKind == FloorKind.Boss && telegraph != null) {
-            BossTelegraphPanel(telegraph!!, timerSec)
+        if (floorKind == FloorKind.Boss && (telegraph != null || timerSec != null)) {
+            BossTelegraphPanel(telegraph ?: BossTelegraph(), timerSec)
         }
 
         // ── Enemy side ──
         when (floorKind) {
             FloorKind.Swarm -> {
                 // Multiple enemies — tappable to select target
-                Text("Tap an enemy to target  •  ${enemies.size} remaining", color = TextDim, fontSize = 10.sp)
+                Text("Tap an enemy to target  •  ${enemies.count { it.alive }} remaining", color = TextDim, fontSize = 10.sp)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(enemies) { enemy ->
                         val isSelected = enemy.id == selectedTarget
                         SwarmEnemyCard(enemy, isSelected) {
-                            if (!inFlight) Astral.battle.selectTarget(enemy.id)
+                            if (!inFlight && enemy.alive) Astral.battle.selectTarget(enemy.id)
                         }
                     }
                 }
@@ -194,8 +227,11 @@ fun DungeonBattleScreen(onFloorEnd: () -> Unit) {
         }
 
         // ── Action bar ──
+        lastError?.let { Notice(it, BannerTone.Error) { Astral.battle.lastError.value = null } }
+
         val canFlee = floorKind != FloorKind.Boss
-        ActionBar(inFlight, canFlee, skillMenuOpen, itemMenuOpen)
+        ActionBar(inFlight || !inBattle, canFlee, skillMenuOpen, itemMenuOpen, fleeChance)
+    }
     }
 }
 
@@ -214,12 +250,21 @@ private fun BossTelegraphPanel(telegraph: BossTelegraph, timerSec: Int?) {
     ) {
         Text("⚠", fontSize = 16.sp)
         Column(Modifier.weight(1f)) {
-            Text("Boss is preparing:", color = Color(0xFFE76E6E), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-            Text(telegraph.label.ifEmpty { "Unknown attack" }, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            if (telegraph.label.isNotEmpty()) {
+                Text(
+                    "Boss is preparing" + (telegraph.inTurns?.let { if (it <= 1) " (next turn):" else " (in $it turns):" } ?: ":"),
+                    color = Color(0xFFE76E6E), fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                )
+                Text(telegraph.label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                if (telegraph.detail.isNotEmpty()) Text(telegraph.detail, color = TextDim, fontSize = 11.sp)
+            } else {
+                Text("Boss floor", color = Color(0xFFE76E6E), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text("Take your turn before the timer runs out.", color = Color.White, fontSize = 12.sp)
+            }
         }
         if (timerSec != null) {
             Column(horizontalAlignment = Alignment.End) {
-                Text("Act in", color = TextDim, fontSize = 10.sp)
+                Text("Turn timer", color = TextDim, fontSize = 10.sp)
                 Text(
                     formatTimer(timerSec),
                     color = if (timerSec <= 30) Color(0xFFE76E6E) else Color(0xFFE7A56E),
@@ -252,13 +297,12 @@ private fun SwarmEnemyCard(enemy: Combatant, selected: Boolean, onTap: () -> Uni
         verticalArrangement = Arrangement.spacedBy(6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF111111)),
-            contentAlignment = Alignment.Center,
-        ) { Text("👹", fontSize = 18.sp) }
+        AstralImage(
+            url = enemy.image,
+            glyph = if (enemy.alive) "👹" else "✖",
+            corner = 10,
+            modifier = Modifier.size(40.dp).alpha(if (enemy.alive) 1f else 0.35f),
+        )
         Text(enemy.name.ifEmpty { "Enemy" }, fontSize = 10.sp, maxLines = 1, textAlign = TextAlign.Center)
         // HP bar
         Box(
@@ -296,7 +340,7 @@ private fun CombatantCard(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (!reverse) Portrait(label, isBoss)
+        if (!reverse) Portrait(label, isBoss, c.image)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(c.name.ifEmpty { label }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -307,12 +351,12 @@ private fun CombatantCard(
             StatBar("HP", c.hp, c.maxHp, Color(0xFFE76E6E))
             if (c.maxMp != null) StatBar("MP", c.mp, c.maxMp, Color(0xFF6EA8E7))
         }
-        if (reverse) Portrait(label, isBoss)
+        if (reverse) Portrait(label, isBoss, c.image)
     }
 }
 
 @Composable
-private fun Portrait(label: String, isBoss: Boolean) {
+private fun Portrait(label: String, isBoss: Boolean, image: String = "") {
     Box(
         modifier = Modifier
             .size(48.dp)
@@ -321,7 +365,7 @@ private fun Portrait(label: String, isBoss: Boolean) {
             .border(0.5.dp, if (isBoss) Color(0xFFE76E6E).copy(alpha = 0.4f) else CardBorder, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center,
     ) {
-        Text(if (isBoss) "☠" else "👤", fontSize = 18.sp)
+        AstralImage(url = image, glyph = if (isBoss) "☠" else "👤", corner = 12, modifier = Modifier.fillMaxSize())
     }
 }
 
@@ -429,6 +473,7 @@ private fun ActionBar(
     canFlee: Boolean,
     skillMenuOpen: Boolean,
     itemMenuOpen: Boolean,
+    fleeChance: Int? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         // Row 1: Attack + Skill + Defend
@@ -475,7 +520,11 @@ private fun ActionBar(
                 modifier = Modifier.weight(1f).height(40.dp),
             ) {
                 Text(
-                    if (canFlee) "Flee" else "Can't flee",
+                    when {
+                        !canFlee -> "Can't flee (boss)"
+                        fleeChance != null -> "Flee ($fleeChance%)"
+                        else -> "Flee"
+                    },
                     fontSize = 12.sp,
                     color = if (canFlee) TextDim else TextFaint,
                 )

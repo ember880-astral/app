@@ -227,4 +227,49 @@ interface AstralApi {
 
     @POST("api/pokemon/tower/challenge")
     suspend fun challengePokemonTower(@Body body: JsonObject = JsonObject(emptyMap())): JsonObject
+
+    /* ── Dungeon / Skills — routes the dungeon screens call. ──────────
+       Not deployed on the bot yet (they 404 today); the screens show a
+       "not live yet" state until they are. Every one is a button tap —
+       the server resolves it and answers with the new state. */
+
+    /** { locations:[…], limits:{ runsUsed, runsMax, newcomerRunsUsed, newcomerRunsMax, staminaUsed, staminaMax, resetAt, premium } } */
+    @GET("api/dungeon/world")
+    suspend fun dungeonWorld(): JsonObject
+
+    /** Active fight if one exists (resume after restart), else { battle:null }. */
+    @GET("api/dungeon/battle")
+    suspend fun dungeonBattle(): JsonObject
+
+    /** { locationId } → spends 1 Run → { battle, limits } */
+    @POST("api/dungeon/enter")
+    suspend fun dungeonEnter(@Body body: JsonObject): JsonObject
+
+    /** { battleId, action:"attack|skill|defend|item|flee", targetId?, skillId?, itemId? } → { battle, result? } */
+    @POST("api/dungeon/act")
+    suspend fun dungeonAct(@Body body: JsonObject): JsonObject
+
+    /** { battleId } → next floor, spends 1 Stamina → { battle, limits } */
+    @POST("api/dungeon/next")
+    suspend fun dungeonNext(@Body body: JsonObject): JsonObject
+
+    /** { battleId } → saves checkpoint, ends the run */
+    @POST("api/dungeon/leave")
+    suspend fun dungeonLeave(@Body body: JsonObject): JsonObject
+
+    /** { equipped:[skill|null ×4], pool:[skill…] } */
+    @GET("api/skills")
+    suspend fun skills(): JsonObject
+
+    /** { slot:0-3, skillId } */
+    @POST("api/skills/equip")
+    suspend fun equipSkill(@Body body: JsonObject): JsonObject
+
+    /** { slot:0-3 } */
+    @POST("api/skills/unequip")
+    suspend fun unequipSkill(@Body body: JsonObject): JsonObject
+
+    /** { bag:[item…], … } — the fight's Item button lists usable consumables from here. */
+    @GET("api/inventory")
+    suspend fun inventory(): JsonObject
 }

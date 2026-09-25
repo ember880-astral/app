@@ -10,6 +10,21 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import com.astralofthesun.app.network.Repository
+import com.astralofthesun.app.network.str
+import com.astralofthesun.app.network.userMessage
+import com.astralofthesun.app.ui.components.AstralImage
+import com.astralofthesun.app.ui.components.BannerTone
+import com.astralofthesun.app.ui.components.Notice
+import com.astralofthesun.app.ui.components.fmt
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -41,6 +56,10 @@ fun ShopScreen() {
     val wallet by Astral.wallet
     var query by remember { mutableStateOf("") }
     var cat by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf<ShopItem?>(null) }
+    var buying by remember { mutableStateOf(false) }
+    var notice by remember { mutableStateOf<Pair<String, BannerTone>?>(null) }
+    val scope = rememberCoroutineScope()
 
     val all = Astral.shop.toList()
     val filtered = all.filter { cat.isEmpty() || it.category == cat }
@@ -81,14 +100,18 @@ fun ShopScreen() {
             singleLine = true,
         )
 
-        // category chips
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // category chips — built from the shelves the server actually sends
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             FilterChip("", "All", cat) { cat = it }
-            FilterChip("weapons", "Weapons", cat) { cat = it }
-            FilterChip("gear", "Gear", cat) { cat = it }
-            FilterChip("items", "Items", cat) { cat = it }
-            FilterChip("pokemon", "Pokémon", cat) { cat = it }
+            all.map { it.category }.distinct().forEach { key ->
+                FilterChip(key, key.replaceFirstChar { it.uppercase() }, cat) { cat = it }
+            }
         }
+
+        notice?.let { (msg, tone) -> Notice(msg, tone) { notice = null } }
 
         // items
         if (filtered.isEmpty()) {
@@ -100,9 +123,45 @@ fun ShopScreen() {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(bottom = 8.dp),
             ) {
-                items(filtered) { ItemCard(it) }
+                items(filtered) { item -> ItemCard(item) { selected = item } }
             }
         }
+    }
+
+    // Buy confirmation — the server checks the balance, charges and delivers (or says why not).
+    selected?.let { item ->
+        AlertDialog(
+            onDismissRequest = { if (!buying) selected = null },
+            title = { Text(item.name.ifEmpty { "Buy item" }) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (item.desc.isNotEmpty()) Text(item.desc, color = TextDim, fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Price:", color = TextDim, fontSize = 12.sp)
+                        if (item.currency == "gems") Gem(13) else Coin(13)
+                        Text(item.price?.let { fmt(it) } ?: "—", fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !buying && item.id.isNotEmpty(),
+                    onClick = {
+                        buying = true
+                        scope.launch {
+                            Repository.buyShopItem(item.id)
+                                .onSuccess { res ->
+                                    notice = (res.str("message") ?: "Bought ${item.name}.") to BannerTone.Success
+                                }
+                                .onFailure { notice = it.userMessage() to BannerTone.Error }
+                            buying = false
+                            selected = null
+                        }
+                    },
+                ) { Text(if (buying) "Buying…" else "Buy") }
+            },
+            dismissButton = { TextButton(enabled = !buying, onClick = { selected = null }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -122,27 +181,22 @@ private fun FilterChip(value: String, label: String, current: String, onSelect: 
 }
 
 @Composable
-private fun ItemCard(item: ShopItem) {
+private fun ItemCard(item: ShopItem, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
             .background(Color(0xFF060606))
             .border(0.5.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF111111)),
-        )
+        AstralImage(url = item.image, corner = 10, modifier = Modifier.fillMaxWidth().height(56.dp))
         Text(item.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Text(item.desc, color = TextDim, fontSize = 11.sp)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             if (item.currency == "gems") Gem(13) else Coin(13)
-            Text(item.price?.toString() ?: "", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(item.price?.let { fmt(it) } ?: "", fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
     }
 }
