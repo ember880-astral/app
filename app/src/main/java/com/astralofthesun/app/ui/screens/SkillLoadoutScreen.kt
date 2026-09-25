@@ -19,7 +19,15 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import com.astralofthesun.app.network.Repository
+import com.astralofthesun.app.network.isNotLive
+import com.astralofthesun.app.network.userMessage
+import com.astralofthesun.app.ui.components.BannerTone
+import com.astralofthesun.app.ui.components.Notice
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -55,6 +63,24 @@ fun SkillLoadoutScreen(onBack: () -> Unit) {
 
     // Which slot index (0–3) the player is currently picking for; null = no picker open
     var editingSlot by remember { mutableStateOf<Int?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        Repository.loadSkills().onFailure { message = if (it.isNotLive) "Skill loadout isn't live on the server yet." else it.userMessage() }
+    }
+
+    /** Equip / Unequip are server calls — the slots re-render from the server's answer. */
+    fun send(block: suspend () -> Result<Unit>) {
+        if (busy) return
+        busy = true
+        message = null
+        scope.launch {
+            block().onFailure { message = it.userMessage() }
+            busy = false
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         // Header
@@ -67,6 +93,10 @@ fun SkillLoadoutScreen(onBack: () -> Unit) {
         ) {
             Text("← Back", color = TextDim, fontSize = 13.sp, modifier = Modifier.clickable { onBack() })
             Text("Skill Loadout", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        }
+
+        message?.let {
+            Notice(it, BannerTone.Warning, modifier = Modifier.padding(horizontal = 16.dp)) { message = null }
         }
 
         LazyColumn(
@@ -87,8 +117,8 @@ fun SkillLoadoutScreen(onBack: () -> Unit) {
                             active = editingSlot == idx,
                             onTap = { editingSlot = if (editingSlot == idx) null else idx },
                             onUnequip = {
-                                Astral.skillLoadout.value = loadout.withSlot(idx, null)
                                 if (editingSlot == idx) editingSlot = null
+                                send { Repository.unequipSkill(idx) }
                             },
                         )
                     }
@@ -126,9 +156,9 @@ fun SkillLoadoutScreen(onBack: () -> Unit) {
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(Color(0xFF111122))
-                                        .clickable {
-                                            Astral.skillLoadout.value = loadout.withSlot(slot, sk)
+                                        .clickable(enabled = !busy) {
                                             editingSlot = null
+                                            send { Repository.equipSkill(slot, sk.id) }
                                         }
                                         .padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically,

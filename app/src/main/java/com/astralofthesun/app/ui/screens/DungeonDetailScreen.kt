@@ -22,7 +22,19 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import com.astralofthesun.app.network.Repository
+import com.astralofthesun.app.network.userMessage
+import com.astralofthesun.app.ui.components.AstralImage
+import com.astralofthesun.app.ui.components.BannerTone
+import com.astralofthesun.app.ui.components.Notice
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,8 +57,25 @@ import com.astralofthesun.app.ui.theme.TextFaint
    and the run cost. The Enter button is the commitment point.
    ──────────────────────────────────────────────────────────────────── */
 @Composable
-fun DungeonDetailScreen(location: LocationEntry, onEnter: () -> Unit, onBack: () -> Unit) {
+fun DungeonDetailScreen(location: LocationEntry, onEntered: () -> Unit, onBack: () -> Unit) {
     val limits by Astral.dungeonLimits
+    val scope = rememberCoroutineScope()
+    var entering by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    /** The server spends the Run and opens the fight; we only move on if it said yes. */
+    fun enter() {
+        if (entering) return
+        entering = true
+        error = null
+        scope.launch {
+            Repository.enterDungeon(location.id)
+                .onSuccess { onEntered() }
+                .onFailure { error = it.userMessage() }
+            entering = false
+        }
+    }
+
     val runsLeft = if (location.isNewcomer)
         limits.newcomerRunsMax - limits.newcomerRunsUsed
     else
@@ -65,10 +94,9 @@ fun DungeonDetailScreen(location: LocationEntry, onEnter: () -> Unit, onBack: ()
                 color = TextDim,
                 fontSize = 13.sp,
                 modifier = Modifier
-                    .padding(bottom = 4.dp)
-                    .run { this },
+                    .clickable(onClick = onBack)
+                    .padding(bottom = 4.dp),
             )
-            // Tap handled via OutlinedButton below for accessibility
         }
 
         // Big art banner
@@ -82,8 +110,8 @@ fun DungeonDetailScreen(location: LocationEntry, onEnter: () -> Unit, onBack: ()
                     .border(0.5.dp, CardBorder, RoundedCornerShape(20.dp)),
                 contentAlignment = Alignment.BottomStart,
             ) {
-                // Art placeholder — backend supplies the image URL via location.art
-                Text("⚔", fontSize = 56.sp, modifier = Modifier.padding(20.dp))
+                // Location art from the server; ⚔ shows until it loads (or if none is set)
+                AstralImage(url = location.art, glyph = "⚔", corner = 0, modifier = Modifier.fillMaxSize())
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -121,8 +149,11 @@ fun DungeonDetailScreen(location: LocationEntry, onEnter: () -> Unit, onBack: ()
                     ) {
                         StatPair("Floors", "${location.totalFloors}")
                         StatPair("Bosses", "${location.bossFloors.size}")
+                        location.checkpointInterval?.let {
+                            StatPair("Checkpoint", "Every $it")
+                        }
                         location.currentFloor?.let {
-                            StatPair("Checkpoint", "Floor $it", Gold)
+                            StatPair("Saved at", "Floor $it", Gold)
                         }
                     }
 
@@ -199,18 +230,23 @@ fun DungeonDetailScreen(location: LocationEntry, onEnter: () -> Unit, onBack: ()
         item {
             Spacer(Modifier.height(4.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                error?.let { Notice(it, BannerTone.Error) }
                 Button(
-                    onClick = onEnter,
-                    enabled = canEnter,
+                    onClick = { enter() },
+                    enabled = canEnter && !entering,
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Primary),
                 ) {
-                    Text(
-                        if (location.currentFloor != null) "Resume at Floor ${location.currentFloor}"
-                        else "Enter Dungeon",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                    )
+                    if (entering) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text(
+                            if (location.currentFloor != null) "Resume at Floor ${location.currentFloor}"
+                            else "Enter Dungeon",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                        )
+                    }
                 }
                 if (!canEnter) {
                     Text(

@@ -32,6 +32,7 @@ import com.astralofthesun.app.network.Repository
 import com.astralofthesun.app.ui.screens.DungeonBattleScreen
 import com.astralofthesun.app.ui.screens.DungeonDetailScreen
 import com.astralofthesun.app.ui.screens.DungeonPrepScreen
+import com.astralofthesun.app.ui.screens.PokemonScreen
 import com.astralofthesun.app.ui.screens.FloorResultScreen
 import com.astralofthesun.app.ui.screens.HomeScreen
 import com.astralofthesun.app.ui.screens.ProfileScreen
@@ -61,6 +62,9 @@ enum class Screen(val label: String, val icon: ImageVector, val inNav: Boolean =
     SkillLoadout("Skills", Icons.Filled.Home, inNav = false),  // reachable from map or menu
     DungeonBattle("Battle", Icons.Filled.Home, inNav = false), // the fight
     FloorResult("Result", Icons.Filled.Home, inNav = false),   // win or death
+
+    // ── Pokémon module (not in bottom nav; opened from Home) ──
+    Pokemon("Pokémon", Icons.Filled.Home, inNav = false),
 }
 
 /* ── Root scaffold ─────────────────────────────────────────────────────
@@ -129,7 +133,9 @@ private fun LoggedInApp() {
                 Screen.Home -> HomeScreen(
                     goTopUp = { cur -> topUpCurrency = cur; current = Screen.TopUp },
                     goDungeon = { current = Screen.WorldMap },
+                    goPokemon = { current = Screen.Pokemon },
                 )
+                Screen.Pokemon -> PokemonScreen(onBack = { current = Screen.Home })
                 Screen.Season -> SeasonScreen()
                 Screen.Shop -> ShopScreen()
                 Screen.TopUp -> TopUpScreen(initialCurrency = topUpCurrency)
@@ -142,6 +148,7 @@ private fun LoggedInApp() {
                         current = if (loc.isTown) Screen.Home // towns just return home for now
                                   else Screen.DungeonDetail
                     },
+                    onSkills = { current = Screen.SkillLoadout },
                 )
 
                 // ── Dungeon detail — big art, floor map, run cost, Enter button ──
@@ -152,13 +159,8 @@ private fun LoggedInApp() {
                     } else {
                         DungeonDetailScreen(
                             location = loc,
-                            onEnter = {
-                                // Spending 1 Run happens here — backend hook lives in Astral.dungeonLimits
-                                // We go straight to battle (skipping the old Prep screen which the design
-                                // no longer forces). Skill loadout is optional, reachable from the map.
-                                Astral.battle.reset()
-                                current = Screen.DungeonBattle
-                            },
+                            // The screen asks the server to enter (it spends the Run); we only navigate on success.
+                            onEntered = { current = Screen.DungeonBattle },
                             onBack = { current = Screen.WorldMap },
                         )
                     }
@@ -178,6 +180,7 @@ private fun LoggedInApp() {
                 // ── The fight ──
                 Screen.DungeonBattle -> DungeonBattleScreen(
                     onFloorEnd = { current = Screen.FloorResult },
+                    onFled = { current = Screen.WorldMap },
                 )
 
                 // ── Win or death ──
@@ -189,24 +192,11 @@ private fun LoggedInApp() {
                     } else {
                         FloorResultScreen(
                             result = result,
-                            onNextFloor = {
-                                // Next floor: reset battle state, keep run (already spent), costs 1 stamina
-                                Astral.battle.reset()
-                                Astral.floorResult.value = null
-                                current = Screen.DungeonBattle
-                            },
-                            onLeaveDungeon = {
-                                // Checkpoint saved, run over
-                                Astral.battle.reset()
-                                Astral.floorResult.value = null
-                                current = Screen.WorldMap
-                            },
-                            onReturnToTown = {
-                                // Death — no retry, back to home
-                                Astral.battle.reset()
-                                Astral.floorResult.value = null
-                                current = Screen.Home
-                            },
+                            // The screen makes the server call (next / leave / death cleanup) first;
+                            // these only navigate once the server has answered.
+                            onNextFloor = { current = Screen.DungeonBattle },
+                            onLeaveDungeon = { current = Screen.WorldMap },
+                            onReturnToTown = { current = Screen.Home },
                         )
                     }
                 }

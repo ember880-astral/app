@@ -14,6 +14,10 @@ val Card = Color(0xFF060606)
 val CardBorder = Color(0x1AFFFFFF) // ~10% white
 val TextDim = Color(0x66FFFFFF)    // ~40% white
 val TextFaint = Color(0x52FFFFFF)  // ~32% white
+val Danger = Color(0xFFE76E6E)
+val Warning = Color(0xFFE7A56E)
+val Success = Color(0xFF6EE787)
+val Info = Color(0xFF6EA8E7)
 
 private val DarkColors = darkColorScheme(
     primary = Primary,
