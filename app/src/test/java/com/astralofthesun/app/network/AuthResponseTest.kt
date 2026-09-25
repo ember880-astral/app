@@ -20,6 +20,16 @@ class AuthResponseTest {
         assertEquals("", player.avatar)
     }
 
+    @Test fun readsLiveLookupShapeWithMaskedPhone() {
+        // Live /api/auth/lookup answer: flat body with the signed handle,
+        // the character name and a masked phone for the confirm screen.
+        val player = Repository.lookupProfile(json(
+            """{"found":true,"handle":"abc.def.ghi","name":"ShadowFang","maskedPhone":"+234•••678","avatarUrl":"https://i.ibb.co/x/pfp.jpg"}"""))
+        assertEquals("ShadowFang", player.name)
+        assertEquals("+234•••678", player.sub)
+        assertEquals("https://i.ibb.co/x/pfp.jpg", player.avatar)
+    }
+
     @Test fun emptyResponseDoesNotAuthenticate() {
         assertFalse(Repository.isAuthenticatedSession(json("{}")))
         assertFalse(Repository.isAuthenticatedSession(json("""{"success":true}""")))

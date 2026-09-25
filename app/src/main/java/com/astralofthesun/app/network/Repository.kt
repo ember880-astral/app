@@ -41,7 +41,14 @@ object AuthState {
     val isLoggedIn = mutableStateOf(false)
     val isLoading = mutableStateOf(false)
     val lastError = mutableStateOf<String?>(null)
-    val pendingIdentifier = mutableStateOf<String?>(null) // set after lookup/request-otp, used by verify-otp
+
+    /* Signed handle from /api/auth/lookup (10-minute token with the JID baked
+       in) — sent back on request-otp/verify-otp. Kept in memory only. */
+    val pendingHandle = mutableStateOf<String?>(null)
+
+    /* True after verify-otp for a brand-new phone with no character yet:
+       the login screen shows character creation before entering the app. */
+    val needsRegistration = mutableStateOf(false)
 }
 
 object Repository {
@@ -57,10 +64,27 @@ object Repository {
         AuthState.isLoggedIn.value = false
     }
 
-    /** Checks the saved session. App hydrates data after the auth gate opens. */
+    /** Checks the saved login token. App hydrates data after the auth gate opens. */
     suspend fun bootstrap() {
+        if (AuthTokenStore.token.isNullOrBlank()) {
+            AuthState.isLoggedIn.value = false
+            return
+        }
+        // The interceptor attaches the token; the session endpoint validates it.
         AuthState.isLoggedIn.value = authCall { isAuthenticatedSession(api.session()) }
-            .getOrDefault(false)
+            .getOrElse { error ->
+                val apiError = error as? ApiError
+                when {
+                    // Token rejected → force re-login.
+                    apiError?.unauthorized == true -> { AuthTokenStore.clear(); false }
+                    // Session endpoint not deployed → trust the saved token.
+                    apiError?.message == NOT_LIVE_MESSAGE -> true
+                    // Offline / cold start → keep the local session; the screens
+                    // will surface connectivity errors themselves.
+                    error.message?.contains("reach the server") == true -> true
+                    else -> false
+                }
+            }
     }
 
     internal fun isAuthenticatedSession(response: JsonObject): Boolean {
@@ -107,52 +131,66 @@ object Repository {
         val user = p.obj("user", "player", "profile") ?: p
         return Player(
             name = user.str("displayName", "display_name", "username", "name").orEmpty(),
+            sub = user.str("maskedPhone", "masked_phone", "phone").orEmpty(),
             avatar = user.str("avatar", "pfp", "avatarUrl", "avatar_url").orEmpty(),
         )
     }
 
-    /* The bot's accounts are username-based (no email). The exact body key
-       the server reads isn't published, so every auth request carries both
-       "identifier" and "username" — the server reads whichever it knows and
-       ignores the other. */
-    private fun identifierBody(value: String) = buildJsonObject {
-        put("identifier", value)
-        put("username", value)
-    }
-
-    suspend fun lookup(identifier: String): Result<JsonObject> = authCall {
-        val res = api.authLookup(identifierBody(identifier.trim())).requireAuthSuccess()
-        AuthState.pendingIdentifier.value = identifier.trim()
+    /** Step 1 — find the account by username/handle or character name.
+     *  Server replies { found, handle(signed token), name, maskedPhone, … }
+     *  or 404 "No character goes by that name." */
+    suspend fun lookup(username: String): Result<JsonObject> = authCall {
+        val res = api.authLookup(buildJsonObject { put("username", username.trim()) })
+            .requireAuthSuccess()
+        val handle = res.payload().str("handle", "token")
+            ?: error("The server accepted the lookup but returned no handle.")
+        AuthState.pendingHandle.value = handle
         res
     }
 
-    suspend fun requestOtp(identifier: String): Result<JsonObject> = authCall {
-        val res = api.requestOtp(identifierBody(identifier.trim())).requireAuthSuccess()
-        AuthState.pendingIdentifier.value = identifier.trim()
+    /** Step 2 — send the signed handle back; the bot DMs a 6-digit code on WhatsApp. */
+    suspend fun requestOtp(handle: String): Result<JsonObject> = authCall {
+        val res = api.requestOtp(buildJsonObject { put("handle", handle) }).requireAuthSuccess()
+        AuthState.pendingHandle.value = handle
         res
     }
 
-    suspend fun verifyOtp(otp: String, identifier: String? = null): Result<JsonObject> = authCall {
-        val id = identifier ?: AuthState.pendingIdentifier.value ?: error("Request a code first")
-        val res = api.verifyOtp(buildJsonObject {
-            put("identifier", id)
-            put("username", id)
-            put("otp", otp.trim())
-            put("code", otp.trim())
-        }).requireAuthSuccess()
-        // Confirm the cookie-backed session; an HTTP 200 alone is not proof of login.
-        check(isAuthenticatedSession(api.session())) { "Unable to confirm your login. Please try again." }
-        AuthState.pendingIdentifier.value = null
-        AuthState.isLoggedIn.value = true
+    /** New-player path: no character yet, so a raw WhatsApp number goes in instead
+     *  of a handle. The server resolves the number and returns a handle like step 1. */
+    suspend fun requestOtpForPhone(phone: String): Result<JsonObject> = authCall {
+        val res = api.requestOtp(buildJsonObject { put("phone", phone.trim()) }).requireAuthSuccess()
+        val handle = res.payload().str("handle", "token") ?: phone.trim()
+        AuthState.pendingHandle.value = handle
         res
     }
 
-    suspend fun register(identifier: String, username: String, otp: String? = null): Result<JsonObject> = runCatching {
+    /** Step 3 — code from the WhatsApp DM + handle → JWT login token. */
+    suspend fun verifyOtp(code: String, handle: String? = null): Result<JsonObject> = authCall {
+        val h = handle ?: AuthState.pendingHandle.value ?: error("Request a code first")
+        val res = api.verifyOtp(buildJsonObject { put("handle", h); put("code", code.trim()) })
+            .requireAuthSuccess()
+        val p = res.payload()
+        val token = p.str("token", "jwt")
+            ?: error("Login was accepted but no token was returned. Please try again.")
+        AuthTokenStore.save(token)
+        AuthState.needsRegistration.value = p.bool("needsRegistration", "needs_registration") == true
+        if (!AuthState.needsRegistration.value) {
+            AuthState.pendingHandle.value = null
+            AuthState.isLoggedIn.value = true
+        }
+        res
+    }
+
+    /** Step 4 — brand-new phones only (needsRegistration): create the character.
+     *  Requires the JWT from step 3, attached automatically by the interceptor. */
+    suspend fun register(name: String, charClass: String, race: String): Result<JsonObject> = authCall {
         val res = api.register(buildJsonObject {
-            put("identifier", identifier)
-            put("username", username)
-            if (otp != null) put("otp", otp)
-        })
+            put("name", name.trim())
+            put("class", charClass)
+            put("race", race)
+        }).requireOk()
+        AuthState.pendingHandle.value = null
+        AuthState.needsRegistration.value = false
         AuthState.isLoggedIn.value = true
         refreshAll()
         res
@@ -160,8 +198,9 @@ object Repository {
 
     suspend fun logout() {
         runCatching { api.logout() }
-        ApiClient.cookieJar.clear()
+        AuthTokenStore.clear()
         AuthState.isLoggedIn.value = false
+        AuthState.needsRegistration.value = false
     }
 
     // ── Full refresh: populates every Astral state the backend covers ──

@@ -3,9 +3,6 @@ package com.astralofthesun.app.network
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.serialization.json.Json
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -15,75 +12,47 @@ import okhttp3.MediaType.Companion.toMediaType
 /* ============================================================
    Astral of the Sun — API client
    Base URL for the live backend (astral-bot on Railway).
-   The bot uses a session cookie (set on /api/auth/verify-otp
-   or /api/auth/register, read back on /api/auth/session),
-   so the OkHttp client carries a persistent CookieJar — every
-   request automatically re-sends the session cookie, and every
-   response's Set-Cookie is captured and saved to disk.
+
+   Auth is token-based: /api/auth/verify-otp signs a JWT login
+   token, and every other endpoint expects it as
+   "Authorization: Bearer <token>". The token is persisted in
+   SharedPreferences and attached automatically by an OkHttp
+   interceptor; a 401 anywhere means the token expired, so the
+   app drops it and returns to the login screen.
    ============================================================ */
 
 object ApiConfig {
     const val BASE_URL = "https://astral-bot-production-afb0.up.railway.app/"
 }
 
-/** Persists cookies (the session cookie in particular) across app restarts. */
-class PersistentCookieJar(context: Context) : CookieJar {
-    private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences("astral_cookies", Context.MODE_PRIVATE)
-    private val store = mutableMapOf<String, MutableList<Cookie>>()
+/** Persists the JWT login token across app restarts. */
+object AuthTokenStore {
+    private const val PREFS = "astral_auth"
+    private const val KEY_TOKEN = "token"
+    private lateinit var prefs: SharedPreferences
 
-    init {
-        val raw = prefs.getString("cookies", null)
-        if (raw != null) {
-            raw.split("||").filter { it.isNotBlank() }.forEach { line ->
-                val parts = line.split("|>")
-                if (parts.size == 2) {
-                    val host = parts[0]
-                    val cookie = Cookie.parse(HttpUrl.Builder().scheme("https").host(host).build(), parts[1])
-                    if (cookie != null) {
-                        store.getOrPut(host) { mutableListOf() }.add(cookie)
-                    }
-                }
-            }
-        }
+    var token: String? = null
+        private set
+
+    fun init(context: Context) {
+        if (::prefs.isInitialized) return
+        prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        token = prefs.getString(KEY_TOKEN, null)
     }
 
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        if (cookies.isEmpty()) return
-        val host = url.host
-        val list = store.getOrPut(host) { mutableListOf() }
-        cookies.forEach { new ->
-            list.removeAll { it.name == new.name }
-            if (!new.expiresAt.let { it != 0L && it < System.currentTimeMillis() }) {
-                list.add(new)
-            }
-        }
-        persist()
-    }
-
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val host = url.host
-        val now = System.currentTimeMillis()
-        return store[host]?.filter { it.expiresAt > now || it.persistent.not() } ?: emptyList()
+    fun save(newToken: String) {
+        token = newToken
+        if (::prefs.isInitialized) prefs.edit().putString(KEY_TOKEN, newToken).apply()
     }
 
     fun clear() {
-        store.clear()
-        persist()
-    }
-
-    private fun persist() {
-        val serialized = store.entries.joinToString("||") { (host, cookies) ->
-            cookies.joinToString("||") { "$host|>${it.toString()}" }
-        }
-        prefs.edit().putString("cookies", serialized).apply()
+        token = null
+        if (::prefs.isInitialized) prefs.edit().remove(KEY_TOKEN).apply()
     }
 }
 
 object ApiClient {
     private var retrofit: Retrofit? = null
-    lateinit var cookieJar: PersistentCookieJar
-        private set
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -95,14 +64,31 @@ object ApiClient {
     /** Call once, e.g. from Application/MainActivity, before using [api]. */
     fun init(context: Context) {
         if (retrofit != null) return
-        cookieJar = PersistentCookieJar(context)
+        AuthTokenStore.init(context)
 
         val logging = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BASIC
         }
 
         val client = OkHttpClient.Builder()
-            .cookieJar(cookieJar)
+            .addInterceptor { chain ->
+                // Attach the login token to every request once we have one.
+                val original = chain.request()
+                val token = AuthTokenStore.token
+                val request = if (token.isNullOrBlank() || original.header("Authorization") != null) original
+                else original.newBuilder().header("Authorization", "Bearer $token").build()
+                chain.proceed(request)
+            }
+            .addInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                if (response.code == 401 && AuthTokenStore.token != null) {
+                    // Token expired or revoked — drop it so the app re-authenticates.
+                    AuthTokenStore.clear()
+                    AuthState.isLoggedIn.value = false
+                    AuthState.needsRegistration.value = false
+                }
+                response
+            }
             .addInterceptor(logging)
             .build()
 
