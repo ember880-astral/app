@@ -11,6 +11,7 @@ import com.astralofthesun.app.data.SeasonTier
 import com.astralofthesun.app.data.ShopItem
 import com.astralofthesun.app.data.Stats
 import com.astralofthesun.app.data.Wallet
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
@@ -78,38 +79,71 @@ object Repository {
         AuthState.isLoggedIn.value = false
     }
 
-    /** Checks for an existing session cookie and, if valid, loads everything. */
+    /** Checks the saved session. App hydrates data after the auth gate opens. */
     suspend fun bootstrap() {
-        val ok = runCatching { api.session() }
-            .map { res ->
-                val p = res.payload()
-                val explicitFlag = p.booleanFlag("loggedIn") ?: p.booleanFlag("valid") ?: p.booleanFlag("authenticated")
-                explicitFlag ?: (p.obj("user") != null || p.str("uid", "id") != null)
-            }
+        AuthState.isLoggedIn.value = authCall { isAuthenticatedSession(api.session()) }
             .getOrDefault(false)
-        AuthState.isLoggedIn.value = ok
-        if (ok) refreshAll()
+    }
+
+    internal fun isAuthenticatedSession(response: JsonObject): Boolean {
+        val p = response.requireAuthSuccess().payload()
+        return p.booleanFlag("loggedIn") ?: p.booleanFlag("valid") ?: p.booleanFlag("authenticated")
+            ?: (p.obj("user") != null || p.str("uid", "id") != null)
     }
 
     private fun JsonObject.booleanFlag(key: String): Boolean? =
         (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull
 
     // ── Auth flow: lookup -> request-otp -> verify-otp, or register ──
-    suspend fun lookup(identifier: String): Result<JsonObject> = runCatching {
-        AuthState.pendingIdentifier.value = identifier
-        api.authLookup(buildJsonObject { put("identifier", identifier) })
+    private suspend fun <T> authCall(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        Result.failure(error)
     }
 
-    suspend fun requestOtp(identifier: String): Result<JsonObject> = runCatching {
-        AuthState.pendingIdentifier.value = identifier
-        api.requestOtp(buildJsonObject { put("identifier", identifier) })
+    private fun JsonObject.requireAuthSuccess(): JsonObject {
+        val p = payload()
+        check(listOf(this, p).none {
+            it.booleanFlag("success") == false || it.booleanFlag("ok") == false ||
+                it.booleanFlag("found") == false || it.booleanFlag("authenticated") == false ||
+                it.booleanFlag("valid") == false || it.booleanFlag("loggedIn") == false ||
+                (it["error"] != null && it["error"] !is kotlinx.serialization.json.JsonNull &&
+                    it.str("error") != "false" && it.str("error") != "")
+        }) { "The request was not accepted. Please check your details and try again." }
+        return this
     }
 
-    suspend fun verifyOtp(otp: String, identifier: String? = null): Result<JsonObject> = runCatching {
-        val id = identifier ?: AuthState.pendingIdentifier.value ?: error("No pending identifier — call requestOtp first")
-        val res = api.verifyOtp(buildJsonObject { put("identifier", id); put("otp", otp) })
+    fun lookupProfile(response: JsonObject): Player {
+        val p = response.payload()
+        val user = p.obj("user", "player", "profile") ?: p
+        return Player(
+            name = user.str("displayName", "display_name", "username", "name").orEmpty(),
+            avatar = user.str("avatar", "pfp", "avatarUrl", "avatar_url").orEmpty(),
+        )
+    }
+
+    suspend fun lookup(identifier: String): Result<JsonObject> = authCall {
+        val res = api.authLookup(buildJsonObject { put("identifier", identifier.trim()) }).requireAuthSuccess()
+        AuthState.pendingIdentifier.value = identifier.trim()
+        res
+    }
+
+    suspend fun requestOtp(identifier: String): Result<JsonObject> = authCall {
+        val res = api.requestOtp(buildJsonObject { put("identifier", identifier.trim()) }).requireAuthSuccess()
+        AuthState.pendingIdentifier.value = identifier.trim()
+        res
+    }
+
+    suspend fun verifyOtp(otp: String, identifier: String? = null): Result<JsonObject> = authCall {
+        val id = identifier ?: AuthState.pendingIdentifier.value ?: error("Request a code first")
+        val res = api.verifyOtp(buildJsonObject { put("identifier", id); put("otp", otp.trim()) })
+            .requireAuthSuccess()
+        // Confirm the cookie-backed session; an HTTP 200 alone is not proof of login.
+        check(isAuthenticatedSession(api.session())) { "Unable to confirm your login. Please try again." }
+        AuthState.pendingIdentifier.value = null
         AuthState.isLoggedIn.value = true
-        refreshAll()
         res
     }
 
