@@ -86,9 +86,9 @@ fun App() {
         if (loggedIn && !checkingSession) Repository.refreshAll()
     }
     if (checkingSession) {
-        androidx.compose.material3.Surface(color = Color(0xFF101010)) {
+        androidx.compose.material3.Surface(color = Bg) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color.White)
+                CircularProgressIndicator(color = Gold)
             }
         }
     } else if (!loggedIn) {

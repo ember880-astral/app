@@ -30,6 +30,14 @@ class AuthResponseTest {
         assertTrue(Repository.isAuthenticatedSession(json("""{"user":{"id":"123"}}""")))
     }
 
+    @Test fun liveSessionShapeFromApiAuthSession() {
+        // Exact shapes observed from the live bot's GET /api/auth/session.
+        assertTrue(Repository.isAuthenticatedSession(
+            json("""{"ok":true,"signedIn":true,"player":{"uid":"ca3a90719754f3ec","name":"Absolute Jester"}}""")))
+        assertFalse(Repository.isAuthenticatedSession(
+            json("""{"ok":true,"signedIn":false,"player":null}""")))
+    }
+
     @Test fun explicitFailureNeverAuthenticatesEvenWithUser() {
         listOf(
             """{"loggedIn":false,"user":{"id":"123"}}""",

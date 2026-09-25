@@ -19,7 +19,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -34,14 +33,23 @@ import coil.compose.AsyncImage
 import com.astralofthesun.app.network.ApiConfig
 import com.astralofthesun.app.network.AuthState
 import com.astralofthesun.app.network.Repository
+import com.astralofthesun.app.network.isNotLive
+import com.astralofthesun.app.network.userMessage
+import com.astralofthesun.app.ui.theme.Gold
+import com.astralofthesun.app.ui.theme.Danger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private enum class LoginStep { Identifier, Confirm, Code }
-private val FormColor = Color(0xFF171717)
-private val MutedText = Color(0xFFD3D3D3)
 
-/** Native Compose adaptation of the dark Uiverse form by Praashoo7. */
+// Same palette as the rest of the app (ui/theme/Theme.kt): pure black
+// background, near-black cards, 10% white hairlines, gold accents.
+private val FormColor = Color(0xFF060606)
+private val FieldColor = Color.Black
+private val Hairline = Color(0x1AFFFFFF)
+private val MutedText = Color(0x99FFFFFF)
+
+/** Login flow (find account → confirm → code), styled with the app's black/gold palette. */
 @Composable
 fun LoginFlow() {
     var step by rememberSaveable { mutableStateOf(LoginStep.Identifier) }
@@ -87,7 +95,15 @@ fun LoginFlow() {
                 avatar = profile.avatar
                 step = LoginStep.Confirm
             },
-            onFailure = { error = "Couldn’t find your account. Check your username/email and connection, then try again." },
+            onFailure = { e ->
+                // The bot answers unknown accounts with "Not found." (as a 404
+                // or an ok:false body) — turn that into a readable message.
+                val msg = e.userMessage()
+                error = if (e.isNotLive || msg.contains("not found", ignoreCase = true) ||
+                    msg.contains("no account", ignoreCase = true)
+                ) "No account found with that username. Check the spelling and try again."
+                else msg
+            },
         )
     }
 
@@ -97,21 +113,26 @@ fun LoginFlow() {
                 code = ""
                 step = LoginStep.Code
                 resendSeconds = 30
-                notice = "Code requested. Check your account’s delivery channel."
+                notice = "Code sent. Check your Discord DMs from the bot for the login code."
             },
-            onFailure = { error = "Couldn’t send the code. Please wait a moment and try again." },
+            onFailure = { e ->
+                val msg = e.userMessage()
+                error = if (e.isNotLive || msg.contains("not found", ignoreCase = true))
+                    "No account found with that username. Check the spelling and try again."
+                else "Couldn’t send the code: $msg"
+            },
         )
     }
 
     fun verifyCode() = perform {
-        Repository.verifyOtp(code.trim(), identifier).onFailure {
-            error = "Couldn’t verify your code. Check the code and connection, or request a new code if it expired."
+        Repository.verifyOtp(code.trim(), identifier).onFailure { e ->
+            error = e.userMessage()
         }
     }
 
     BackHandler(enabled = step != LoginStep.Identifier) { if (!busy) changeAccount() }
 
-    Surface(color = Color(0xFF101010), contentColor = Color.White) {
+    Surface(color = Color.Black, contentColor = Color.White) {
         Box(
             Modifier.fillMaxSize().safeDrawingPadding().imePadding()
                 .verticalScroll(rememberScrollState()).padding(24.dp),
@@ -119,12 +140,15 @@ fun LoginFlow() {
         ) {
             Column(
                 Modifier.widthIn(max = 400.dp).fillMaxWidth()
-                    .clip(RoundedCornerShape(25.dp)).background(FormColor).padding(28.dp),
+                    .clip(RoundedCornerShape(25.dp))
+                    .background(FormColor)
+                    .border(1.dp, Hairline, RoundedCornerShape(25.dp))
+                    .padding(28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Spacer(Modifier.height(12.dp))
-                Text("ASTRAL OF THE SUN", style = MaterialTheme.typography.labelMedium, color = MutedText)
+                Text("ASTRAL OF THE SUN", style = MaterialTheme.typography.labelMedium, color = Gold)
                 Text(
                     when (step) {
                         LoginStep.Identifier -> "Log in"
@@ -138,7 +162,7 @@ fun LoginFlow() {
                     when (step) {
                         LoginStep.Identifier -> "Find your account to get started."
                         LoginStep.Confirm -> "Confirm your account, then send a login code."
-                        LoginStep.Code -> "Enter the login code sent to your account."
+                        LoginStep.Code -> "Enter the login code the bot sent you."
                     },
                     color = MutedText, textAlign = TextAlign.Center,
                 )
@@ -146,7 +170,9 @@ fun LoginFlow() {
 
                 if (step != LoginStep.Identifier) {
                     Box(
-                        Modifier.size(76.dp).clip(CircleShape).background(Color(0xFF252525)),
+                        Modifier.size(76.dp).clip(CircleShape)
+                            .background(FieldColor)
+                            .border(1.dp, Hairline, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Default.Person, "Profile picture placeholder", Modifier.size(36.dp), tint = MutedText)
@@ -161,7 +187,7 @@ fun LoginFlow() {
                 }
 
                 if (step == LoginStep.Identifier) {
-                    LoginField(identifier, "Username or email", busy, false,
+                    LoginField(identifier, "Username", busy, false,
                         onChange = { identifier = it; error = null },
                         onSubmit = { if (identifier.isNotBlank() && !busy) findAccount() })
                 } else if (step == LoginStep.Code) {
@@ -171,7 +197,7 @@ fun LoginFlow() {
                 }
 
                 error?.let {
-                    Text(it, color = Color(0xFFFF9E9E), textAlign = TextAlign.Center,
+                    Text(it, color = Danger, textAlign = TextAlign.Center,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 }
                 notice?.let {
@@ -193,10 +219,14 @@ fun LoginFlow() {
                         LoginStep.Code -> code.isNotBlank()
                     },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    shape = RoundedCornerShape(5.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF252525), contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Gold, contentColor = Color.Black,
+                        disabledContainerColor = Gold.copy(alpha = 0.35f),
+                        disabledContentColor = Color(0x99FFFFFF),
+                    ),
                 ) {
-                    if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                    if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
                     else Text(when (step) {
                         LoginStep.Identifier -> "Find my account"
                         LoginStep.Confirm -> "Send code"
@@ -233,16 +263,16 @@ private fun LoginField(
         label = { Text(label) },
         leadingIcon = { Icon(if (isCode) Icons.Default.Lock else Icons.Default.Person, null) },
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(25.dp))
-            .background(Brush.verticalGradient(listOf(Color(0xFF050505), FormColor)))
-            .border(1.dp, Color(0xFF090909), RoundedCornerShape(25.dp)),
+            .background(FieldColor)
+            .border(1.dp, Hairline, RoundedCornerShape(25.dp)),
         shape = RoundedCornerShape(25.dp),
         colors = TextFieldDefaults.colors(
             focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
             disabledContainerColor = Color.Transparent,
-            focusedTextColor = MutedText, unfocusedTextColor = MutedText,
-            focusedLabelColor = Color.White, unfocusedLabelColor = MutedText,
-            focusedLeadingIconColor = Color.White, unfocusedLeadingIconColor = Color.White,
-            cursorColor = Color.White,
+            focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+            focusedLabelColor = Gold, unfocusedLabelColor = MutedText,
+            focusedLeadingIconColor = Gold, unfocusedLeadingIconColor = MutedText,
+            cursorColor = Gold,
             focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
             disabledIndicatorColor = Color.Transparent,
         ),
