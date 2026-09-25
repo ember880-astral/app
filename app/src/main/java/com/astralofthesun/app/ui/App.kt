@@ -40,6 +40,10 @@ import com.astralofthesun.app.ui.screens.ShopScreen
 import com.astralofthesun.app.ui.screens.SkillLoadoutScreen
 import com.astralofthesun.app.ui.screens.TopUpScreen
 import com.astralofthesun.app.ui.screens.WorldMapScreen
+import com.astralofthesun.app.network.AuthState
+import com.astralofthesun.app.ui.screens.LoginFlow
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.Alignment
 import com.astralofthesun.app.ui.theme.Bg
 import com.astralofthesun.app.ui.theme.Gold
 
@@ -69,14 +73,34 @@ enum class Screen(val label: String, val icon: ImageVector, val inNav: Boolean =
    ─────────────────────────────────────────────────────────────────── */
 @Composable
 fun App() {
+    var checkingSession by remember { mutableStateOf(true) }
+    val loggedIn by AuthState.isLoggedIn
+    LaunchedEffect(Unit) {
+        try { Repository.bootstrap() } finally { checkingSession = false }
+    }
+    LaunchedEffect(loggedIn, checkingSession) {
+        if (loggedIn && !checkingSession) Repository.refreshAll()
+    }
+    if (checkingSession) {
+        androidx.compose.material3.Surface(color = Color(0xFF101010)) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Color.White)
+            }
+        }
+    } else if (!loggedIn) {
+        LoginFlow()
+    } else {
+        LoggedInApp()
+    }
+}
+
+@Composable
+private fun LoggedInApp() {
     var current by remember { mutableStateOf(Screen.Home) }
     var topUpCurrency by rememberSaveable { mutableStateOf("solars") }
 
     // Hold the selected location so DungeonDetail can read it without touching Astral
     var detailLocation by remember { mutableStateOf<LocationEntry?>(null) }
-
-    // Check for an existing session cookie and hydrate Astral's state if one is valid.
-    LaunchedEffect(Unit) { Repository.bootstrap() }
 
     Scaffold(
         containerColor = Bg,
