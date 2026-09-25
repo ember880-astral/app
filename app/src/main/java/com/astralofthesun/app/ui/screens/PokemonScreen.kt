@@ -79,7 +79,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 
 /* ── Pokémon ──────────────────────────────────────────────────────────
-   Uses the bot's live /api/pokemon/* routes (Pokémon Showdown engine
+   Uses the bot's live /api/pokemon routes (Pokémon Showdown engine
    server-side). Like every other screen, the app only sends taps and
    draws what comes back: catch rolls, damage, XP, evolutions and prices
    are all decided by the server.
