@@ -20,6 +20,16 @@ class AuthResponseTest {
         assertEquals("", player.avatar)
     }
 
+    @Test fun readsLiveLookupShapeWithMaskedPhone() {
+        // Live /api/auth/lookup answer: flat body with the signed handle,
+        // the character name and a masked phone for the confirm screen.
+        val player = Repository.lookupProfile(json(
+            """{"found":true,"handle":"abc.def.ghi","name":"ShadowFang","maskedPhone":"+234•••678","avatarUrl":"https://i.ibb.co/x/pfp.jpg"}"""))
+        assertEquals("ShadowFang", player.name)
+        assertEquals("+234•••678", player.sub)
+        assertEquals("https://i.ibb.co/x/pfp.jpg", player.avatar)
+    }
+
     @Test fun emptyResponseDoesNotAuthenticate() {
         assertFalse(Repository.isAuthenticatedSession(json("{}")))
         assertFalse(Repository.isAuthenticatedSession(json("""{"success":true}""")))
@@ -28,6 +38,14 @@ class AuthResponseTest {
     @Test fun validSessionsAuthenticate() {
         assertTrue(Repository.isAuthenticatedSession(json("""{"data":{"authenticated":true}}""")))
         assertTrue(Repository.isAuthenticatedSession(json("""{"user":{"id":"123"}}""")))
+    }
+
+    @Test fun liveSessionShapeFromApiAuthSession() {
+        // Exact shapes observed from the live bot's GET /api/auth/session.
+        assertTrue(Repository.isAuthenticatedSession(
+            json("""{"ok":true,"signedIn":true,"player":{"uid":"ca3a90719754f3ec","name":"Absolute Jester"}}""")))
+        assertFalse(Repository.isAuthenticatedSession(
+            json("""{"ok":true,"signedIn":false,"player":null}""")))
     }
 
     @Test fun explicitFailureNeverAuthenticatesEvenWithUser() {

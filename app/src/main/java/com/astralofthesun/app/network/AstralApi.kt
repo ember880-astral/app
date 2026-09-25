@@ -14,8 +14,9 @@ import retrofit2.http.Path
 /* ============================================================
    Astral of the Sun — full backend surface.
    Base: https://astral-bot-production-afb0.up.railway.app/
-   Auth is session-cookie based (set by verify-otp/register,
-   carried automatically by ApiClient's PersistentCookieJar).
+   Auth is token-based: verify-otp signs a JWT, which the
+   ApiClient interceptor sends as "Authorization: Bearer <token>"
+   on every request afterwards.
 
    Every request/response body is a generic JsonObject on
    purpose: the exact backend schema isn't published, so the
@@ -36,16 +37,20 @@ interface AstralApi {
     @GET("api/stats")
     suspend fun stats(): JsonObject
 
-    // ── Auth ────────────────────────────────────────────────
+    // ── Auth (WhatsApp-OTP flow; see Repository for the bodies) ──────
+    // lookup: {"username":name} → {"found":true,"handle":"<signed token>","name","maskedPhone",…} | 404
     @POST("api/auth/lookup")
     suspend fun authLookup(@Body body: JsonObject): JsonObject
 
+    // request-otp: {"handle"} (or {"phone"} for brand-new players) → code DM'd on WhatsApp
     @POST("api/auth/request-otp")
     suspend fun requestOtp(@Body body: JsonObject): JsonObject
 
+    // verify-otp: {"handle","code"} → {"ok":true,"token":"<JWT>","needsRegistration",player}
     @POST("api/auth/verify-otp")
     suspend fun verifyOtp(@Body body: JsonObject): JsonObject
 
+    // register: {"name","class","race"} — requires the JWT (new phones only)
     @POST("api/auth/register")
     suspend fun register(@Body body: JsonObject): JsonObject
 
