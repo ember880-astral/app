@@ -256,6 +256,7 @@ fun LoginFlow() {
                     LoginStep.Register -> LoginField(regName, "Character name", busy, isCode = false, isPhone = false,
                         onChange = { regName = it; error = null },
                         onSubmit = {})
+                    LoginStep.Confirm -> {} // profile card + Send code button only
                 }
 
                 if (step == LoginStep.Register) {
